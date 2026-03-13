@@ -1,15 +1,18 @@
 import streamlit as st
 import google.generativeai as genai
+import time
+from botocore.exceptions import ClientError # 일반적인 에러 핸들링용
 
-# 페이지 설정
-st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗")
+# 1. 페이지 설정
+st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
 
-# --- 스타일 및 헤더 ---
-st.title("🔗 기하-전공 연결고리 탐색기")
+# --- 스타일 설정 ---
 st.markdown("""
-고등학교 기하 단원이 대학교 전공에서 어떻게 활용되는지 궁금한가요?  
-단원과 희망 전공을 선택하고, 그 **놀라운 연결고리**를 확인해보세요!
-""")
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stButton>button { width: 100%; border-radius: 10px; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 데이터 정의 ---
 GEOMETRY_UNITS = {
@@ -18,83 +21,104 @@ GEOMETRY_UNITS = {
     "III. 공간도형과 공간좌표": ["직선과 평면의 위치 관계", "삼수선의 정리", "정사영", "공간좌표", "구의 방정식"]
 }
 
-# --- 사이드바: 설정 ---
+# --- 로직 함수 ---
+
+def setup_genai():
+    """API 키 설정 및 구성"""
+    api_key = st.secrets.get("GOOGLE_API_KEY")
+    if not api_key:
+        st.error("🔑 API 키가 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
+        st.stop()
+    genai.configure(api_key=api_key)
+    return api_key
+
+@st.cache_data(ttl=3600)
+def get_valid_models(_api_key):
+    """사용 가능한 최신 모델 목록을 동적으로 가져옴 (버전 변화 대응)"""
+    try:
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                models.append(m.name.replace("models/", ""))
+        
+        # 'flash' 모델이 있으면 우선순위로 배치 (무료 티어 권장)
+        flash_models = [m for m in models if "flash" in m.lower()]
+        other_models = [m for m in models if "flash" not in m.lower()]
+        return flash_models + other_models
+    except Exception as e:
+        return ["gemini-1.5-flash"] # 에러 시 기본값 반환
+
+@st.cache_data(show_spinner=False)
+def get_ai_analysis(model_name, topic, major):
+    """
+    AI 분석 요청 (캐싱 적용: 동일한 질문은 API를 다시 쓰지 않음)
+    429 에러 발생 시 지수 백오프(재시도) 로직 포함
+    """
+    model = genai.GenerativeModel(model_name)
+    prompt = f"""
+    고등학교 수학 '기하' 과목의 '{topic}' 개념이 대학교 '{major}' 전공 과목이나 연구 분야에서 어떻게 활용되는지 설명해줘.
+    1. 실제 전공 도서나 실무에서 쓰이는 구체적인 사례를 들어줘.
+    2. 고등학생이 이해하기 쉽게 친절하고 격려하는 어조로 작성해줘.
+    3. 300자 내외의 한 문단으로 작성해줘.
+    """
+    
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            if "429" in str(e) and i < max_retries - 1:
+                time.sleep(5 * (i + 1)) # 재시도 대기 시간 증가
+                continue
+            else:
+                raise e
+
+# --- UI 레이아웃 ---
+
+st.title("🔗 기하-전공 연결고리 탐색기")
+st.info("선택한 기하 개념이 희망 전공에서 어떻게 살아 움직이는지 확인해보세요!")
+
+setup_genai()
+available_models = get_valid_models(st.secrets["GOOGLE_API_KEY"])
+
 with st.sidebar:
     st.header("⚙️ 설정")
-    
-    # API 키 확인 (Streamlit Cloud Secrets에서 가져옴)
-    api_key = st.secrets.get("GOOGLE_API_KEY")
-    
-    if not api_key:
-        st.error("API 키가 설정되지 않았습니다. Streamlit Secrets를 확인하세요.")
-        st.stop()
-    
-    # 모델 목록 불러오기 함수
-    @st.cache_data(ttl=3600) # 1시간마다 갱신
-    def get_available_models(key):
-        genai.configure(api_key=key)
-        models = []
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    models.append(m)
-            # 최신 버전 순 정렬 (버전 번호 내림차순)
-            models.sort(key=lambda x: x.version, reverse=True)
-            return models
-        except Exception as e:
-            st.error(f"모델 목록을 불러오는 중 오류 발생: {e}")
-            return []
-
-    models = get_available_models(api_key)
-    model_names = [m.name.replace("models/", "") for m in models]
-    
-    # 기본값 설정 (gemini-1.5-flash가 있으면 그걸로, 아니면 첫 번째)
-    default_index = 0
-    for i, name in enumerate(model_names):
-        if "gemini-1.5-flash" in name:
-            default_index = i
-            break
-            
     selected_model = st.selectbox(
-        "사용할 AI 모델", 
-        model_names, 
-        index=default_index if model_names else 0
+        "AI 모델 선택", 
+        available_models, 
+        help="Flash 모델은 속도가 빠르고 제한이 적으며, Pro 모델은 더 깊은 분석이 가능합니다."
     )
+    st.caption("※ 429 오류 발생 시 Flash 모델 사용을 권장합니다.")
 
-# --- 메인 입력 화면 ---
+# 입력 섹션
 col1, col2 = st.columns(2)
-
 with col1:
-    unit_category = st.selectbox("대단원 선택", list(GEOMETRY_UNITS.keys()))
-
+    unit_cat = st.selectbox("대단원", list(GEOMETRY_UNITS.keys()))
 with col2:
-    topic = st.selectbox("소단원 선택", GEOMETRY_UNITS[unit_category])
+    selected_topic = st.selectbox("소단원", GEOMETRY_UNITS[unit_cat])
 
-major = st.text_input("희망 학과 입력", placeholder="예: 컴퓨터공학과, 기계공학과, 의예과 등")
+selected_major = st.text_input("희망 전공 (예: 자동차공학과, AI학과, 건축학과)", placeholder="전공명을 입력하세요")
 
-# --- 실행 버튼 및 결과 ---
-if st.button("✨ 연결고리 찾기!", type="primary"):
-    if not major:
-        st.warning("⚠️ 희망 학과를 입력해주세요!")
+# 결과 출력
+if st.button("✨ 연결고리 분석하기"):
+    if not selected_major:
+        st.warning("먼저 희망 전공을 입력해주세요!")
     else:
-        with st.spinner(f"AI({selected_model})가 연결고리를 분석 중입니다..."):
+        with st.spinner("AI가 학문적 연결고리를 찾는 중..."):
             try:
-                # Gemini 설정 및 호출
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(selected_model)
+                result = get_ai_analysis(selected_model, selected_topic, selected_major)
                 
-                prompt = f"""
-                고등학교 기하 단원 '{topic}'와 대학교 전공 '{major}'의 연관성을 설명해줘. 
-                실제 전공에서 어떻게 활용되는지 구체적인 예시를 들어 200자 내외로 한 문단으로 설명해줘. 
-                설명은 친절하고 격려하는 어조로 작성해줘.
-                """
+                st.subheader(f"📍 {selected_topic} × {selected_major}")
+                st.success(result)
                 
-                response = model.generate_content(prompt)
-                
-                st.success(f"💡 {major} & {topic}")
-                st.write(response.text)
-                st.caption(f"Analyzed by {selected_model}")
+                st.divider()
+                st.balloons()
                 
             except Exception as e:
-                st.error("오류가 발생했습니다.")
-                st.error(e)
+                if "429" in str(e):
+                    st.error("🚀 현재 사용자가 많아 API 요청 한도를 초과했습니다. 1분 뒤에 다시 시도하시거나, 왼쪽 사이드바에서 다른 모델(Flash 계열)을 선택해 보세요.")
+                else:
+                    st.error(f"알 수 없는 오류가 발생했습니다: {e}")
+
+st.caption("본 서비스는 Google Gemini AI를 활용하여 생성된 답변을 제공합니다.")
