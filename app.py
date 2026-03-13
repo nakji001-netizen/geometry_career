@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import time
-from botocore.exceptions import ClientError # 일반적인 에러 핸들링용
 
 # 1. 페이지 설정
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -36,17 +35,19 @@ def setup_genai():
 def get_valid_models(_api_key):
     """사용 가능한 최신 모델 목록을 동적으로 가져옴 (버전 변화 대응)"""
     try:
-        models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models.append(m.name.replace("models/", ""))
+        # 생성 가능한 전체 모델 목록 불러오기
+        models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 'flash' 모델이 있으면 우선순위로 배치 (무료 티어 권장)
-        flash_models = [m for m in models if "flash" in m.lower()]
-        other_models = [m for m in models if "flash" not in m.lower()]
+        # 'flash' 모델 중 실험버전(exp)을 제외하고, 최신 버전이 앞에 오도록 내림차순 정렬
+        flash_models = sorted([m for m in models if "flash" in m.lower() and "exp" not in m.lower()], reverse=True)
+        # 나머지 모델 (pro 등)도 정렬
+        other_models = sorted([m for m in models if "flash" not in m.lower() and "exp" not in m.lower()], reverse=True)
+        
+        # Flash 최신 모델이 리스트의 맨 첫 번째(기본값)가 되도록 합치기
         return flash_models + other_models
-    except Exception as e:
-        return ["gemini-1.5-flash"] # 에러 시 기본값 반환
+    except Exception:
+        # 에러 시 기본 안전망 반환
+        return ["gemini-2.5-flash"] 
 
 @st.cache_data(show_spinner=False)
 def get_ai_analysis(model_name, topic, major):
@@ -69,7 +70,7 @@ def get_ai_analysis(model_name, topic, major):
             return response.text
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
-                time.sleep(5 * (i + 1)) # 재시도 대기 시간 증가
+                time.sleep(5 * (i + 1))  # 재시도 대기 시간 증가
                 continue
             else:
                 raise e
@@ -79,15 +80,16 @@ def get_ai_analysis(model_name, topic, major):
 st.title("🔗 기하-전공 연결고리 탐색기")
 st.info("선택한 기하 개념이 희망 전공에서 어떻게 살아 움직이는지 확인해보세요!")
 
-setup_genai()
-available_models = get_valid_models(st.secrets["GOOGLE_API_KEY"])
+# API 세팅 및 모델 목록 가져오기
+api_key = setup_genai()
+available_models = get_valid_models(api_key)
 
 with st.sidebar:
     st.header("⚙️ 설정")
     selected_model = st.selectbox(
         "AI 모델 선택", 
         available_models, 
-        help="Flash 모델은 속도가 빠르고 제한이 적으며, Pro 모델은 더 깊은 분석이 가능합니다."
+        help="목록의 첫 번째 모델이 현재 사용 가능한 가장 최신 Flash 모델입니다."
     )
     st.caption("※ 429 오류 발생 시 Flash 모델 사용을 권장합니다.")
 
@@ -105,7 +107,7 @@ if st.button("✨ 연결고리 분석하기"):
     if not selected_major:
         st.warning("먼저 희망 전공을 입력해주세요!")
     else:
-        with st.spinner("AI가 학문적 연결고리를 찾는 중..."):
+        with st.spinner(f"AI({selected_model})가 학문적 연결고리를 찾는 중..."):
             try:
                 result = get_ai_analysis(selected_model, selected_topic, selected_major)
                 
@@ -117,7 +119,7 @@ if st.button("✨ 연결고리 분석하기"):
                 
             except Exception as e:
                 if "429" in str(e):
-                    st.error("🚀 현재 사용자가 많아 API 요청 한도를 초과했습니다. 1분 뒤에 다시 시도하시거나, 왼쪽 사이드바에서 다른 모델(Flash 계열)을 선택해 보세요.")
+                    st.error("🚀 현재 사용자가 많아 API 요청 한도를 초과했습니다. 잠시 후 다시 시도하시거나, 왼쪽 사이드바에서 다른 모델을 선택해 보세요.")
                 else:
                     st.error(f"알 수 없는 오류가 발생했습니다: {e}")
 
