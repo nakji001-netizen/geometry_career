@@ -10,7 +10,6 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stButton>button { width: 100%; border-radius: 10px; font-weight: bold; background-color: #2563eb; color: white; }
-    /* 기존 HTML 카드 대신 Streamlit 기본 컨테이너의 테두리를 꾸미는 CSS */
     [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 0.8rem; border-left: 5px solid #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.1); background-color: white; }
     </style>
     """, unsafe_allow_html=True)
@@ -24,29 +23,39 @@ GEOMETRY_UNITS = {
 
 # --- 3. 로직 함수 ---
 
-def setup_genai():
-    api_key = st.secrets.get("GOOGLE_API_KEY")
-    if not api_key:
-        st.error("🔑 API 키가 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
-        st.stop()
-    genai.configure(api_key=api_key)
-    return api_key
-
-@st.cache_data(ttl=3600)
-def get_valid_models(_api_key):
-    """모델 목록을 가져오고 최신 Flash 모델을 우선순위로 정렬"""
+# [수정] 진로 탐색기와 완전히 동일한 모델 자동 선택 로직
+def get_best_flash_model():
     try:
-        models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        flash_models = sorted([m for m in models if "flash" in m.lower() and "exp" not in m.lower()], reverse=True)
-        other_models = sorted([m for m in models if "flash" not in m.lower() and "exp" not in m.lower()], reverse=True)
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        results = flash_models + other_models
-        # 잘림(Syntax Error) 오류 해결 및 Fallback 최신화 완료
-        return results if results else ["gemini-2.5-flash"]
+        # 'flash' 포함된 정식 버전 중 최신 버전
+        flash_models = sorted([m for m in available_models if 'flash' in m.lower() and 'exp' not in m.lower()])
+        if flash_models:
+            return flash_models[-1]
+        
+        # 'flash'가 없으면 전체 목록 중 최신 모델
+        return available_models[-1]
     except Exception:
-        return ["gemini-2.5-flash"]
+        # API 호출 실패 시 강제 지정 (최신 안정화 버전)
+        return "models/gemini-2.5-flash"
 
-# 동일한 전공/소단원 검색 시 API 호출 낭비를 막는 캐싱 기능
+# --- 4. 사이드바: 시스템 설정 (진로 탐색기와 동일한 방식) ---
+with st.sidebar:
+    st.header("⚙️ 시스템 설정")
+    try:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        genai.configure(api_key=api_key)
+        
+        selected_model_path = get_best_flash_model()
+        selected_model_name = selected_model_path.replace("models/", "")
+        
+        st.success("✅ API 연결 성공")
+        st.info(f"🤖 사용 모델: **{selected_model_name}**")
+    except Exception as e:
+        st.error("⚠️ API 키를 확인해주세요.")
+        api_key = None
+
+# --- 5. 분석 엔진 (응답 스키마 + 캐싱) ---
 @st.cache_data(show_spinner=False, ttl=86400) 
 def get_ai_analysis(model_name, topic, major):
     """응답 스키마를 적용하여 일관된 JSON 출력 보장"""
@@ -79,7 +88,6 @@ def get_ai_analysis(model_name, topic, major):
     for i in range(max_retries):
         try:
             response = model.generate_content(prompt)
-            # 안전 필터에 걸려 텍스트가 없을 경우 예외 처리
             if not response.text:
                 raise ValueError("AI가 콘텐츠 정책에 의해 답변 생성을 차단했습니다.")
             return json.loads(response.text)
@@ -90,22 +98,10 @@ def get_ai_analysis(model_name, topic, major):
             else:
                 raise e
 
-# --- 4. UI 레이아웃 ---
+# --- 6. UI 레이아웃 및 실행 ---
 
 st.title("🔗 기하-전공 연결고리 탐색기")
 st.info("선택한 기하 개념이 희망 전공에서 어떻게 살아 움직이는지 확인해보세요!")
-
-api_key = setup_genai()
-available_models = get_valid_models(api_key)
-
-with st.sidebar:
-    st.header("⚙️ 설정")
-    selected_model = st.selectbox(
-        "AI 모델 선택", 
-        available_models, 
-        help="목록 상단의 모델이 최신 Flash 모델입니다."
-    )
-    st.caption("※ 응답 속도가 빠른 Flash 모델을 권장합니다.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -115,18 +111,19 @@ with col2:
 
 selected_major = st.text_input("🎓 희망 전공 (예: 자동차공학과, AI학과, 건축학과)", placeholder="전공명을 입력하세요")
 
-# --- 5. 결과 출력 ---
+# --- 결과 출력 ---
 if st.button("✨ 연결고리 분석하기"):
-    if not selected_major:
+    if not api_key:
+        st.error("API Key 설정이 필요합니다.")
+    elif not selected_major:
         st.warning("먼저 희망 전공을 입력해주세요!")
     else:
-        with st.spinner(f"AI({selected_model})가 학문적 연결고리를 분석 중..."):
+        with st.spinner(f"AI({selected_model_name})가 학문적 연결고리를 분석 중..."):
             try:
-                res = get_ai_analysis(selected_model, selected_topic, selected_major)
+                res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
                 
                 st.markdown(f"### 📍 {selected_topic} <small>X</small> {selected_major}", unsafe_allow_html=True)
                 
-                # HTML 렌더링 대신 Streamlit 컨테이너를 사용하여 LaTeX 수식 깨짐 방지
                 with st.container(border=True):
                     st.markdown("#### 🔍 학문적 연결고리")
                     st.markdown(res['connection'])
@@ -139,7 +136,6 @@ if st.button("✨ 연결고리 분석하기"):
                     st.markdown("#### 🌟 선배로서의 조언")
                     st.info(f"*{res['advice']}*")
                 
-                # 다운로드 텍스트 준비
                 download_text = f"[{selected_topic} x {selected_major} 분석 보고서]\n\n" \
                                 f"1. 연결성: {res['connection']}\n\n" \
                                 f"2. 활용사례: {res['example']}\n\n" \
@@ -152,7 +148,7 @@ if st.button("✨ 연결고리 분석하기"):
                 st.error(f"⚠️ {ve}")
             except Exception as e:
                 if "429" in str(e):
-                    st.error("🚀 현재 요청이 너무 많습니다. 잠시 후 다시 시도하시거나 다른 모델을 선택해 주세요.")
+                    st.error("🚀 현재 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
                 else:
                     st.error(f"분석 중 오류가 발생했습니다: {e}")
 
