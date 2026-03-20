@@ -23,7 +23,6 @@ GEOMETRY_UNITS = {
 
 # --- 3. 로직 함수 ---
 
-# [수정] 진로 탐색기와 완전히 동일한 모델 자동 선택 로직
 def get_best_flash_model():
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -39,21 +38,26 @@ def get_best_flash_model():
         # API 호출 실패 시 강제 지정 (최신 안정화 버전)
         return "models/gemini-2.5-flash"
 
-# --- 4. 사이드바: 시스템 설정 (진로 탐색기와 동일한 방식) ---
+# --- 4. 사이드바: 시스템 설정 ---
+# [보완] 변수 초기화를 통해 잠재적인 NameError 방지
+api_key = None
+selected_model_name = "모델 확인 불가"
+
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     try:
-        api_key = st.secrets["GOOGLE_API_KEY"]
-        genai.configure(api_key=api_key)
-        
-        selected_model_path = get_best_flash_model()
-        selected_model_name = selected_model_path.replace("models/", "")
-        
-        st.success("✅ API 연결 성공")
-        st.info(f"🤖 사용 모델: **{selected_model_name}**")
+        api_key = st.secrets.get("GOOGLE_API_KEY")
+        if not api_key:
+            st.error("⚠️ Secrets에 API 키가 없습니다.")
+        else:
+            genai.configure(api_key=api_key)
+            selected_model_path = get_best_flash_model()
+            selected_model_name = selected_model_path.replace("models/", "")
+            
+            st.success("✅ API 연결 성공")
+            st.info(f"🤖 사용 모델: **{selected_model_name}**")
     except Exception as e:
-        st.error("⚠️ API 키를 확인해주세요.")
-        api_key = None
+        st.error(f"⚠️ API 연결 오류: {e}")
 
 # --- 5. 분석 엔진 (응답 스키마 + 캐싱) ---
 @st.cache_data(show_spinner=False, ttl=86400) 
@@ -90,7 +94,10 @@ def get_ai_analysis(model_name, topic, major):
             response = model.generate_content(prompt)
             if not response.text:
                 raise ValueError("AI가 콘텐츠 정책에 의해 답변 생성을 차단했습니다.")
+            # [보완] JSON 디코딩 에러 방어
             return json.loads(response.text)
+        except json.JSONDecodeError:
+            raise ValueError("AI 응답을 분석하는 중 오류가 발생했습니다. 다시 시도해 주세요.")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
@@ -114,9 +121,10 @@ selected_major = st.text_input("🎓 희망 전공 (예: 자동차공학과, AI�
 # --- 결과 출력 ---
 if st.button("✨ 연결고리 분석하기"):
     if not api_key:
-        st.error("API Key 설정이 필요합니다.")
-    elif not selected_major:
-        st.warning("먼저 희망 전공을 입력해주세요!")
+        st.error("API Key 설정이 필요합니다. 좌측 사이드바를 확인해주세요.")
+    # [보완] .strip()을 사용해 공백만 입력한 경우를 차단
+    elif not selected_major.strip():
+        st.warning("먼저 희망 전공을 정확히 입력해주세요!")
     else:
         with st.spinner(f"AI({selected_model_name})가 학문적 연결고리를 분석 중..."):
             try:
