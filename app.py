@@ -2,6 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import time
+import requests  # 구글 시트 전송용 라이브러리 추가
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -22,31 +23,38 @@ GEOMETRY_UNITS = {
 }
 
 # --- 3. 로직 함수 ---
-
 def get_best_flash_model():
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 'flash' 포함된 정식 버전 중 최신 버전
         flash_models = sorted([m for m in available_models if 'flash' in m.lower() and 'exp' not in m.lower()])
         if flash_models:
             return flash_models[-1]
-        
-        # 'flash'가 없으면 전체 목록 중 최신 모델
         return available_models[-1]
     except Exception:
-        # API 호출 실패 시 강제 지정 (최신 안정화 버전)
         return "models/gemini-2.5-flash"
 
+def save_to_google_sheet(webhook_url, payload):
+    """결과를 구글 스프레드시트로 전송하는 함수"""
+    try:
+        response = requests.post(webhook_url, json=payload)
+        if response.status_code == 200:
+            return True
+        else:
+            return False
+    except Exception as e:
+        return False
+
 # --- 4. 사이드바: 시스템 설정 ---
-# [보완] 변수 초기화를 통해 잠재적인 NameError 방지
 api_key = None
+webhook_url = None
 selected_model_name = "모델 확인 불가"
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
     try:
         api_key = st.secrets.get("GOOGLE_API_KEY")
+        webhook_url = st.secrets.get("WEBHOOK_URL_MATH") # 새 웹훅 URL 불러오기
+        
         if not api_key:
             st.error("⚠️ Secrets에 API 키가 없습니다.")
         else:
@@ -56,6 +64,12 @@ with st.sidebar:
             
             st.success("✅ API 연결 성공")
             st.info(f"🤖 사용 모델: **{selected_model_name}**")
+            
+        if not webhook_url:
+            st.warning("⚠️ 구글 시트 웹훅 URL이 없습니다. (자동 수합 비활성화)")
+        else:
+            st.success("✅ 구글 시트 연결 성공")
+            
     except Exception as e:
         st.error(f"⚠️ API 연결 오류: {e}")
 
@@ -63,7 +77,6 @@ with st.sidebar:
 @st.cache_data(show_spinner=False, ttl=86400) 
 def get_ai_analysis(model_name, topic, major):
     """응답 스키마를 적용하여 일관된 JSON 출력 보장"""
-    
     generation_config = {
         "response_mime_type": "application/json",
         "response_schema": {
@@ -94,7 +107,6 @@ def get_ai_analysis(model_name, topic, major):
             response = model.generate_content(prompt)
             if not response.text:
                 raise ValueError("AI가 콘텐츠 정책에 의해 답변 생성을 차단했습니다.")
-            # [보완] JSON 디코딩 에러 방어
             return json.loads(response.text)
         except json.JSONDecodeError:
             raise ValueError("AI 응답을 분석하는 중 오류가 발생했습니다. 다시 시도해 주세요.")
@@ -106,30 +118,56 @@ def get_ai_analysis(model_name, topic, major):
                 raise e
 
 # --- 6. UI 레이아웃 및 실행 ---
-
 st.title("🔗 기하-전공 연결고리 탐색기")
 st.info("선택한 기하 개념이 희망 전공에서 어떻게 살아 움직이는지 확인해보세요!")
 
+# 학생 정보 입력 (선생님 수합용)
+st.markdown("**학생 정보 입력**")
+col_info1, col_info2 = st.columns(2)
+with col_info1:
+    student_id = st.text_input("🔢 학번", placeholder="예: 20101")
+with col_info2:
+    student_name = st.text_input("👤 이름", placeholder="예: 이순신")
+
+st.markdown("**탐색 주제 설정**")
 col1, col2 = st.columns(2)
 with col1:
     unit_cat = st.selectbox("📂 대단원 선택", list(GEOMETRY_UNITS.keys()))
 with col2:
     selected_topic = st.selectbox("📍 소단원 선택", GEOMETRY_UNITS[unit_cat])
 
-selected_major = st.text_input("🎓 희망 전공 (예: 자동차공학과, AI학과, 건축학과)", placeholder="전공명을 입력하세요")
+selected_major = st.text_input("🎓 희망 전공", placeholder="예: 자동차공학과, AI학과, 건축학과")
 
-# --- 결과 출력 ---
+# --- 결과 출력 및 시트 전송 ---
 if st.button("✨ 연결고리 분석하기"):
     if not api_key:
         st.error("API Key 설정이 필요합니다. 좌측 사이드바를 확인해주세요.")
-    # [보완] .strip()을 사용해 공백만 입력한 경우를 차단
-    elif not selected_major.strip():
-        st.warning("먼저 희망 전공을 정확히 입력해주세요!")
+    elif not (student_id.strip() and student_name.strip() and selected_major.strip()):
+        st.warning("⚠️ 학번, 이름, 희망 전공을 모두 정확히 입력해주세요!")
     else:
         with st.spinner(f"AI({selected_model_name})가 학문적 연결고리를 분석 중..."):
             try:
+                # AI 분석 실행
                 res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
                 
+                # 구글 시트로 데이터 전송
+                if webhook_url:
+                    payload = {
+                        "student_id": student_id,
+                        "student_name": student_name,
+                        "topic": selected_topic,
+                        "major": selected_major,
+                        "connection": res['connection'],
+                        "example": res['example'],
+                        "advice": res['advice']
+                    }
+                    is_saved = save_to_google_sheet(webhook_url, payload)
+                    if is_saved:
+                        st.toast("✅ 선생님의 시트로 결과가 자동으로 제출되었습니다!", icon="🚀")
+                    else:
+                        st.toast("⚠️ 시트 제출에 실패했습니다. 선생님께 문의하세요.", icon="😥")
+
+                # 결과 화면 출력
                 st.markdown(f"### 📍 {selected_topic} <small>X</small> {selected_major}", unsafe_allow_html=True)
                 
                 with st.container(border=True):
