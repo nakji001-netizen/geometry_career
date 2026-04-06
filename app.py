@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import time
-import requests  # 구글 시트 전송용 라이브러리 추가
+import requests
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -34,14 +34,13 @@ def get_best_flash_model():
         return "models/gemini-2.5-flash"
 
 def save_to_google_sheet(webhook_url, payload):
-    """결과를 구글 스프레드시트로 전송하는 함수"""
     try:
         response = requests.post(webhook_url, json=payload)
         if response.status_code == 200:
             return True
         else:
             return False
-    except Exception as e:
+    except Exception:
         return False
 
 # --- 4. 사이드바: 시스템 설정 ---
@@ -53,7 +52,7 @@ with st.sidebar:
     st.header("⚙️ 시스템 설정")
     try:
         api_key = st.secrets.get("GOOGLE_API_KEY")
-        webhook_url = st.secrets.get("WEBHOOK_URL_MATH") # 새 웹훅 URL 불러오기
+        webhook_url = st.secrets.get("WEBHOOK_URL_MATH")
         
         if not api_key:
             st.error("⚠️ Secrets에 API 키가 없습니다.")
@@ -66,17 +65,16 @@ with st.sidebar:
             st.info(f"🤖 사용 모델: **{selected_model_name}**")
             
         if not webhook_url:
-            st.warning("⚠️ 구글 시트 웹훅 URL이 없습니다. (자동 수합 비활성화)")
+            st.warning("⚠️ 구글 시트 웹훅 URL이 없습니다.")
         else:
             st.success("✅ 구글 시트 연결 성공")
             
     except Exception as e:
-        st.error(f"⚠️ API 연결 오류: {e}")
+        st.error(f"⚠️ 설정 오류: {e}")
 
-# --- 5. 분석 엔진 (응답 스키마 + 캐싱) ---
+# --- 5. 분석 엔진 ---
 @st.cache_data(show_spinner=False, ttl=86400) 
 def get_ai_analysis(model_name, topic, major):
-    """응답 스키마를 적용하여 일관된 JSON 출력 보장"""
     generation_config = {
         "response_mime_type": "application/json",
         "response_schema": {
@@ -106,10 +104,10 @@ def get_ai_analysis(model_name, topic, major):
         try:
             response = model.generate_content(prompt)
             if not response.text:
-                raise ValueError("AI가 콘텐츠 정책에 의해 답변 생성을 차단했습니다.")
+                raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
             return json.loads(response.text)
         except json.JSONDecodeError:
-            raise ValueError("AI 응답을 분석하는 중 오류가 발생했습니다. 다시 시도해 주세요.")
+            raise ValueError("AI 응답 분석 오류가 발생했습니다.")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
@@ -121,7 +119,6 @@ def get_ai_analysis(model_name, topic, major):
 st.title("🔗 기하-전공 연결고리 탐색기")
 st.info("선택한 기하 개념이 희망 전공에서 어떻게 살아 움직이는지 확인해보세요!")
 
-# 학생 정보 입력 (선생님 수합용)
 st.markdown("**학생 정보 입력**")
 col_info1, col_info2 = st.columns(2)
 with col_info1:
@@ -138,7 +135,6 @@ with col2:
 
 selected_major = st.text_input("🎓 희망 전공", placeholder="예: 자동차공학과, AI학과, 건축학과")
 
-# --- 결과 출력 및 시트 전송 ---
 if st.button("✨ 연결고리 분석하기"):
     if not api_key:
         st.error("API Key 설정이 필요합니다. 좌측 사이드바를 확인해주세요.")
@@ -147,14 +143,14 @@ if st.button("✨ 연결고리 분석하기"):
     else:
         with st.spinner(f"AI({selected_model_name})가 학문적 연결고리를 분석 중..."):
             try:
-                # AI 분석 실행
                 res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
                 
-                # 구글 시트로 데이터 전송
                 if webhook_url:
+                    # 📌 수정된 부분: "unit_cat": unit_cat 가 추가되었습니다.
                     payload = {
                         "student_id": student_id,
                         "student_name": student_name,
+                        "unit_cat": unit_cat,  
                         "topic": selected_topic,
                         "major": selected_major,
                         "connection": res['connection'],
@@ -163,40 +159,4 @@ if st.button("✨ 연결고리 분석하기"):
                     }
                     is_saved = save_to_google_sheet(webhook_url, payload)
                     if is_saved:
-                        st.toast("✅ 선생님의 시트로 결과가 자동으로 제출되었습니다!", icon="🚀")
-                    else:
-                        st.toast("⚠️ 시트 제출에 실패했습니다. 선생님께 문의하세요.", icon="😥")
-
-                # 결과 화면 출력
-                st.markdown(f"### 📍 {selected_topic} <small>X</small> {selected_major}", unsafe_allow_html=True)
-                
-                with st.container(border=True):
-                    st.markdown("#### 🔍 학문적 연결고리")
-                    st.markdown(res['connection'])
-                    st.divider()
-                    
-                    st.markdown("#### 🛠️ 실제 활용 사례")
-                    st.markdown(res['example'])
-                    st.divider()
-                    
-                    st.markdown("#### 🌟 선배로서의 조언")
-                    st.info(f"*{res['advice']}*")
-                
-                download_text = f"[{selected_topic} x {selected_major} 분석 보고서]\n\n" \
-                                f"1. 연결성: {res['connection']}\n\n" \
-                                f"2. 활용사례: {res['example']}\n\n" \
-                                f"3. 조언: {res['advice']}"
-                
-                st.download_button("📄 결과 텍스트 다운로드", data=download_text, file_name=f"{selected_major}_분석.txt")
-                st.balloons()
-                
-            except ValueError as ve:
-                st.error(f"⚠️ {ve}")
-            except Exception as e:
-                if "429" in str(e):
-                    st.error("🚀 현재 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
-                else:
-                    st.error(f"분석 중 오류가 발생했습니다: {e}")
-
-st.divider()
-st.caption("본 서비스는 Google Gemini AI를 활용하여 생성된 답변을 제공하며, 수식에는 LaTeX가 사용될 수 있습니다.")
+                        st.toast("✅ 선생님의
