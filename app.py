@@ -159,4 +159,41 @@ if st.button("✨ 연결고리 분석하기"):
                     }
                     is_saved = save_to_google_sheet(webhook_url, payload)
                     if is_saved:
-                        st.toast("✅ 선생님의
+                        st.toast("✅ 선생님의 시트로 결과가 자동으로 제출되었습니다!", icon="🚀")
+                    else:
+                        st.toast("⚠️ 시트 제출에 실패했습니다.", icon="😥")
+
+                st.markdown(f"### 📍 {selected_topic} <small>X</small> {selected_major}", unsafe_allow_html=True)
+                
+                with st.container(border=True):
+                    st.markdown("#### 🔍 학문적 연결고리")
+                    st.markdown(res['connection'])
+                    st.divider()
+                    
+                    st.markdown("#### 🛠️ 실제 활용 사례")
+                    st.markdown(res['example'])
+                    st.divider()
+                    
+                    st.markdown("#### 🌟 선배로서의 조언")
+                    st.info(f"*{res['advice']}*")
+                
+                download_text = f"[{selected_topic} x {selected_major} 분석 보고서]\n\n" \
+                                f"1. 대단원: {unit_cat}\n" \
+                                f"2. 소단원: {selected_topic}\n\n" \
+                                f"3. 연결성: {res['connection']}\n\n" \
+                                f"4. 활용사례: {res['example']}\n\n" \
+                                f"5. 조언: {res['advice']}"
+                
+                st.download_button("📄 결과 텍스트 다운로드", data=download_text, file_name=f"{selected_major}_분석.txt")
+                st.balloons()
+                
+            except ValueError as ve:
+                st.error(f"⚠️ {ve}")
+            except Exception as e:
+                if "429" in str(e):
+                    st.error("🚀 현재 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+                else:
+                    st.error(f"분석 중 오류가 발생했습니다: {e}")
+
+st.divider()
+st.caption("본 서비스는 Google Gemini AI를 활용하여 생성된 답변을 제공하며, 수식에는 LaTeX가 사용될 수 있습니다.")
