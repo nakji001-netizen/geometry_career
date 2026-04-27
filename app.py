@@ -23,8 +23,9 @@ GEOMETRY_UNITS = {
 }
 
 # --- 3. 로직 함수 ---
+@st.cache_data(show_spinner=False, ttl=86400)
 def get_best_flash_model():
-    """안정적인 최신 Flash 모델을 탐색 (lite, exp 제외)"""
+    """매번 검색하지 않고 하루에 한 번만 최신 모델을 탐색하여 기억함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         flash_models = sorted([
@@ -150,7 +151,6 @@ if st.button("✨ 연결고리 분석하기"):
                 res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
                 
                 if webhook_url:
-                    # 📌 수정된 부분: "unit_cat": unit_cat 가 추가되었습니다.
                     payload = {
                         "student_id": student_id,
                         "student_name": student_name,
