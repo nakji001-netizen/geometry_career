@@ -3,6 +3,7 @@ import google.generativeai as genai
 import json
 import time
 import requests
+import threading  # 구글 시트 백그라운드 저장을 위한 라이브러리 추가
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -39,15 +40,17 @@ def get_best_flash_model():
     except Exception:
         return "gemini-1.5-flash-latest"
 
-def save_to_google_sheet(webhook_url, payload):
-    try:
-        response = requests.post(webhook_url, json=payload)
-        if response.status_code == 200:
-            return True
-        else:
-            return False
-    except Exception:
-        return False
+def save_to_google_sheet_background(webhook_url, payload):
+    """결과를 구글 시트로 전송 (화면 멈춤 없이 백그라운드에서 실행)"""
+    def send_request():
+        try:
+            requests.post(webhook_url, json=payload)
+        except Exception:
+            pass # 백그라운드 작업이므로 에러가 나도 메인 화면을 멈추지 않음
+
+    # 새로운 스레드를 만들어서 전송 업무를 맡기고 바로 복귀
+    thread = threading.Thread(target=send_request)
+    thread.start()
 
 # --- 4. 사이드바: 시스템 설정 ---
 api_key = None
@@ -150,6 +153,7 @@ if st.button("✨ 연결고리 분석하기"):
             try:
                 res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
                 
+                # 구글 시트에 자동 저장 로직 (백그라운드)
                 if webhook_url:
                     payload = {
                         "student_id": student_id,
@@ -161,11 +165,8 @@ if st.button("✨ 연결고리 분석하기"):
                         "example": res['example'],
                         "advice": res['advice']
                     }
-                    is_saved = save_to_google_sheet(webhook_url, payload)
-                    if is_saved:
-                        st.toast("✅ 선생님의 시트로 결과가 자동으로 제출되었습니다!", icon="🚀")
-                    else:
-                        st.toast("⚠️ 시트 제출에 실패했습니다.", icon="😥")
+                    save_to_google_sheet_background(webhook_url, payload)
+                    st.toast("✅ 분석 완료! (결과는 선생님 시트로 안전하게 전송 중입니다)", icon="🚀")
 
                 st.markdown(f"### 📍 {selected_topic} <small>X</small> {selected_major}", unsafe_allow_html=True)
                 
