@@ -3,7 +3,8 @@ import google.generativeai as genai
 import json
 import time
 import requests
-import threading  # 구글 시트 백그라운드 저장을 위한 라이브러리 추가
+import threading
+import streamlit.components.v1 as components  # 폭죽 효과를 위한 컴포넌트
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -24,11 +25,29 @@ GEOMETRY_UNITS = {
 }
 
 # --- 3. 로직 함수 ---
+
+def throw_confetti():
+    """자바스크립트를 활용한 화려한 폭죽 효과"""
+    components.html(
+        """
+        <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+        <script>
+            confetti({
+                particleCount: 150,
+                spread: 80,
+                origin: { y: 0.6 }
+            });
+        </script>
+        """,
+        height=0,
+    )
+
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_best_flash_model():
     """매번 검색하지 않고 하루에 한 번만 최신 모델을 탐색하여 기억함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # 'flash' 포함, 'lite' 제외, 'exp' 제외하여 검증된 일반 모델 필터링
         flash_models = sorted([
             m.replace("models/", "") 
             for m in available_models 
@@ -46,9 +65,7 @@ def save_to_google_sheet_background(webhook_url, payload):
         try:
             requests.post(webhook_url, json=payload)
         except Exception:
-            pass # 백그라운드 작업이므로 에러가 나도 메인 화면을 멈추지 않음
-
-    # 새로운 스레드를 만들어서 전송 업무를 맡기고 바로 복귀
+            pass 
     thread = threading.Thread(target=send_request)
     thread.start()
 
@@ -190,7 +207,9 @@ if st.button("✨ 연결고리 분석하기"):
                                 f"5. 조언: {res['advice']}"
                 
                 st.download_button("📄 결과 텍스트 다운로드", data=download_text, file_name=f"{selected_major}_분석.txt")
-                st.balloons()
+                
+                # 축하 효과: 폭죽 터뜨리기
+                throw_confetti()
                 
             except ValueError as ve:
                 st.error(f"⚠️ {ve}")
