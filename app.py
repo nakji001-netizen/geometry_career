@@ -17,23 +17,26 @@ st.markdown("""
 
 # --- 2. 데이터 정의 ---
 GEOMETRY_UNITS = {
-        "I. 이차곡선": ["1.1.포물선", "1.2.타원", "1.3.쌍곡선", "2.1.이차곡선의 접선의 방정식"],
-
+    "I. 이차곡선": ["1.1.포물선", "1.2.타원", "1.3.쌍곡선", "2.1.이차곡선의 접선의 방정식"],
     "II. 공간도형과 공간좌표": ["1.1.직선과 평면의 위치 관계", "1.2.삼수선의 정리", "1.3.정사영", "2.1.좌표공간", "2.2.선분의 내분점", "2.3.구의 방정식"],
-
     "III. 벡터": ["1.1.벡터", "1.2.벡터의 덧셈과 뺄셈", "1.3.벡터의 실수배", "2.1.위치벡터", "2.2.벡터의 성분", "2.3.벡터의 내적", "3.1.직선의 방정식", "3.2.평면과 구의 방정식"]
 }
 
 # --- 3. 로직 함수 ---
 def get_best_flash_model():
+    """안정적인 최신 Flash 모델을 탐색 (lite, exp 제외)"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        flash_models = sorted([m for m in available_models if 'flash' in m.lower() and 'exp' not in m.lower()])
+        flash_models = sorted([
+            m.replace("models/", "") 
+            for m in available_models 
+            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
+        ])
         if flash_models:
             return flash_models[-1]
-        return available_models[-1]
+        return "gemini-1.5-flash-latest"
     except Exception:
-        return "models/gemini-2.5-flash"
+        return "gemini-1.5-flash-latest"
 
 def save_to_google_sheet(webhook_url, payload):
     try:
@@ -60,8 +63,7 @@ with st.sidebar:
             st.error("⚠️ Secrets에 API 키가 없습니다.")
         else:
             genai.configure(api_key=api_key)
-            selected_model_path = get_best_flash_model()
-            selected_model_name = selected_model_path.replace("models/", "")
+            selected_model_name = get_best_flash_model()
             
             st.success("✅ API 연결 성공")
             st.info(f"🤖 사용 모델: **{selected_model_name}**")
@@ -108,8 +110,8 @@ def get_ai_analysis(model_name, topic, major):
             if not response.text:
                 raise ValueError("AI가 콘텐츠를 생성하지 못했습니다.")
             return json.loads(response.text)
-        except json.JSONDecodeError:
-            raise ValueError("AI 응답 분석 오류가 발생했습니다.")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"AI 응답 분석 오류가 발생했습니다. ({e})")
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
                 time.sleep(3 * (i + 1))
