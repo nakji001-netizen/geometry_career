@@ -13,6 +13,14 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     .stButton>button { width: 100%; border-radius: 10px; font-weight: bold; background-color: #2563eb; color: white; }
     [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 0.8rem; border-left: 5px solid #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.1); background-color: white; }
+    
+    /* 기본 제목 크기 (PC) */
+    h1 { font-size: 2.2rem !important; }
+    
+    /* 모바일 화면(너비 768px 이하)일 때 제목 크기 축소 */
+    @media (max-width: 768px) {
+        h1 { font-size: 1.4rem !important; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
