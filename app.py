@@ -4,7 +4,7 @@ import json
 import time
 import requests
 import threading
-from google.api_core.exceptions import ResourceExhausted  # 429 에러 정밀 감지용
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, InternalServerError
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -35,10 +35,7 @@ GEOMETRY_UNITS = {
 # --- 3. 로직 함수 ---
 @st.cache_data(show_spinner=False)
 def get_best_flash_model():
-    """
-    [속도 최적화] 유료 플랜 전환 후에는 불필요한 모델 목록 조회(list_models) 네트워크 요청을 
-    생략하고, 가장 최신의 초고속 모델인 'gemini-2.5-flash'를 바로 사용하여 대기 시간을 없앱니다.
-    """
+    """유료 계정 전용: 리스트 조회 속도 저하를 없애기 위해 gemini-2.5-flash 모델명 즉시 고정"""
     return "gemini-2.5-flash"
 
 def save_to_google_sheet_background(webhook_url, payload):
@@ -74,29 +71,23 @@ with st.sidebar:
 # --- 5. 분석 엔진 ---
 @st.cache_data(show_spinner=False, ttl=86400) 
 def get_ai_analysis(model_name, topic, major):
-    """지문 길이를 통제하고 추론을 단순화하여 출력 속도를 대폭 끌어올린 심층 분석 함수"""
+    """[초고속 튜닝] 무거운 response_schema를 걷어내고 초경량 고속 JSON 모드로 연결고리 심층 분석"""
     generation_config = {
         "response_mime_type": "application/json",
-        "response_schema": {
-            "type": "object",
-            "properties": {
-                "connection": {"type": "string"}, 
-                "example": {"type": "string"}, 
-                "advice": {"type": "string"}
-            },
-            "required": ["connection", "example", "advice"]
-        },
-        "temperature": 0.3  # [속도 최적화] 결정적인 단어 위주로 빠르게 정답을 출력하도록 조율합니다.
+        "temperature": 0.2  # 답변 생성 시간 최적화
     }
     
-    # [속도 최적화] 시스템 지침을 통해 긴 텍스트 출력을 원천 차단하고 핵심 위주로 유도합니다.
+    # 스키마의 무거운 검사 오버헤드 없이 완벽한 JSON 포맷을 출력하게 유도하는 세부 조언 지침
     system_instruction = (
-        "너는 고등학교 기하 수학 교사이자 대학 진로 전학 전문가야. "
-        "기하 과목의 개념이 대학교 특정 전공에서 어떤 학문적 고리로 엮이는지 상세하게 분석하되, "
-        "답변이 너무 길어지면 시스템 로딩 속도가 느려지므로 아래의 제약을 칼같이 지켜야 해.\n\n"
-        "1. 학문적 연결고리(connection): LaTeX 수학식(예: $, $$)을 섞어 전문적으로 서술하되, 핵심만 딱 2~3문장 이내로 요약해 작성해 줘.\n"
-        "2. 실제 활용 사례(example): 전공 분야에서 실제 쓰이는 공학적/학술적 응용 사례를 명쾌하게 2~3문장 이내로 적어 줘.\n"
-        "3. 선배로서의 조언(advice): 해당 전공을 꿈꾸는 학생에게 기하 공부의 중요성을 언급하며 친근하게 2문장 이내로 독려해 줘."
+        "너는 고등학교 기하 수학 교사이자 대학 진로 진학 전문가야. "
+        "반드시 기하개념과 희망 대학 전공 간의 융합 연결성을 분석해 아래 기술된 키(Key)를 가진 단 하나의 JSON 객체 형태로만 결과를 반환해야 해. "
+        "마크다운 코드 블록 기호(```json 등)는 앞뒤에 절대 쓰지 말고 오직 순수한 JSON 텍스트만 출력해.\n\n"
+        "{\n"
+        '  "connection": "기하개념과 전공 간의 학문적 연결점을 LaTeX 수학식($, $$)을 포함하여 핵심만 2~3문장 이내로 밀도 있게 서술한 문자열",\n'
+        '  "example": "해당 전공 및 실제 산업 분야에서 이 기하 개념이 실제 적용되는 구체적 공학적 사례를 2~3문장 이내로 정리한 문자열",\n'
+        '  "advice": "해당 전공을 꿈꾸는 학생에게 기하 공부의 중요성을 언급하며 고등학생 수준에 맞추어 따뜻하고 친근하게 격려하는 2문장 이내의 조언 문자열"\n'
+        "}\n\n"
+        "답변의 길이는 간결함이 생명이야. 불필요하게 텍스트를 늘려 생성 지연을 초래하지 마."
     )
     
     model = genai.GenerativeModel(
@@ -110,13 +101,21 @@ def get_ai_analysis(model_name, topic, major):
     for i in range(max_retries):
         try:
             response = model.generate_content(prompt)
-            return json.loads(response.text)
-        except (ResourceExhausted, Exception) as e:
-            # 유료 키 상태이므로 한도 초과 시 대기 시간을 타이트하게 가져갑니다.
-            if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
-                if i < max_retries - 1:
-                    time.sleep(2 * (i + 1))
-                    continue
+            raw_text = response.text.strip()
+            
+            # 구글 API가 가끔 응답에 마크다운 기호(```json)를 붙이는 현상을 완벽히 방어
+            if raw_text.startswith("```json"):
+                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+                
+            return json.loads(raw_text)
+            
+        except (ResourceExhausted, ServiceUnavailable, InternalServerError, Exception) as e:
+            # 503(구글 서버 지연) 및 500(내부 시스템 리셋) 대응 백오프 초고속 자동 재시도
+            if i < max_retries - 1:
+                time.sleep(1.5 * (i + 1))
+                continue
             raise e
 
 # --- 6. 실행 및 결과 ---
@@ -143,33 +142,49 @@ if st.button("✨ 연결고리 분석하기"):
     elif not (student_id.strip() and student_name.strip() and selected_major.strip()):
         st.warning("⚠️ 모든 정보를 입력해주세요!")
     else:
-        with st.spinner("학문적 연결고리를 분석 중..."):
-            try:
-                res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
+        # 체감 대기 지루함을 줄이는 단계별 상태 변화 애니메이션 연출
+        status_placeholder = st.empty()
+        with status_placeholder.container():
+            st.markdown("⚡ **구글 AI 초고속 전용 전송로를 여는 중...**")
+            progress_bar = st.progress(15)
+            
+        try:
+            # 상태 변경 피드백
+            with status_placeholder.container():
+                st.markdown("🧠 **기하 수학적 성질과 대학 전공의 공학적 알고리즘을 계산하는 중...**")
+                progress_bar.progress(55)
                 
-                # 다운로드 혹은 다른 인터랙션 시 화면 초기화 방지를 위해 세션에 박제
-                st.session_state['math_analysis_data'] = {
-                    'res': res, 'unit_cat': unit_cat, 'selected_topic': selected_topic, 'selected_major': selected_major
+            res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
+            
+            # 다운로드 혹은 다른 인터랙션 시 화면 초기화 방지를 위해 세션에 박제
+            st.session_state['math_analysis_data'] = {
+                'res': res, 'unit_cat': unit_cat, 'selected_topic': selected_topic, 'selected_major': selected_major
+            }
+            
+            with status_placeholder.container():
+                st.markdown("🚀 **분석 문서를 가공하여 선생님 교실 장부로 자동 기록하는 중...**")
+                progress_bar.progress(90)
+                
+            if webhook_url:
+                payload = {
+                    "student_id": student_id, "student_name": student_name, "unit_cat": unit_cat,
+                    "topic": selected_topic, "major": selected_major, "connection": res['connection'],
+                    "example": res['example'], "advice": res['advice']
                 }
-                
-                if webhook_url:
-                    payload = {
-                        "student_id": student_id, "student_name": student_name, "unit_cat": unit_cat,
-                        "topic": selected_topic, "major": selected_major, "connection": res['connection'],
-                        "example": res['example'], "advice": res['advice']
-                    }
-                    save_to_google_sheet_background(webhook_url, payload)
-                    st.toast("✅ 결과 전송 중!", icon="🚀")
+                save_to_google_sheet_background(webhook_url, payload)
+                st.toast("✅ 결과 전송 중!", icon="🚀")
 
-                # 풍선 효과
-                st.balloons()
-                
-            except Exception as e:
-                error_msg = str(e)
-                if "429" in error_msg or "quota" in error_msg.lower():
-                    st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 잠시 지연되었습니다. **약 30초 후에 [연결고리 분석하기] 버튼을 다시 한번만 눌러주세요!**")
-                else:
-                    st.error(f"분석 중 오류: {e}")
+            # 상태창 제거 및 이펙트 효과
+            status_placeholder.empty()
+            st.balloons()
+            
+        except Exception as e:
+            status_placeholder.empty()
+            error_msg = str(e)
+            if "429" in error_msg or "quota" in error_msg.lower():
+                st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 잠시 지연되었습니다. **약 15초 후에 [연결고리 분석하기] 버튼을 다시 한번만 눌러주세요!**")
+            else:
+                st.error(f"분석 중 오류: {e}")
 
 # 결과 화면 렌더링부 (Session State 연동으로 영속성 유지)
 if 'math_analysis_data' in st.session_state:
