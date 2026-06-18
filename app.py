@@ -4,6 +4,7 @@ import json
 import time
 import requests
 import threading
+from google.api_core.exceptions import ResourceExhausted  # 429 에러 정밀 감지용
 
 # --- 1. 페이지 설정 및 디자인 ---
 st.set_page_config(page_title="기하-전공 연결고리 탐색기", page_icon="🔗", layout="centered")
@@ -34,7 +35,7 @@ GEOMETRY_UNITS = {
 # --- 3. 로직 함수 ---
 @st.cache_data(show_spinner=False, ttl=86400)
 def get_best_flash_model():
-    """최신 모델 탐색 및 기억"""
+    """안정적인 최신 Flash 모델 명칭을 탐색하거나 무료 할당량이 넉넉한 2.5 계열로 복귀함"""
     try:
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         flash_models = sorted([
@@ -42,11 +43,17 @@ def get_best_flash_model():
             for m in available_models 
             if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
         ])
-        if flash_models:
+        
+        # 일일 20회 제한이 있는 3.5 모델을 필터링하고 2.5 혹은 1.5 모델을 타겟팅
+        preferred_models = [m for m in flash_models if '3.5' not in m]
+        if preferred_models:
+            return preferred_models[-1]
+        elif flash_models:
             return flash_models[-1]
-        return "gemini-1.5-flash-latest"
+        return "gemini-2.5-flash"
     except Exception:
-        return "gemini-1.5-flash-latest"
+        # API 조회 자체에 에러가 나거나 한도가 풀려도 앱이 멈추지 않도록 안전한 최신 모델명 반환
+        return "gemini-2.5-flash"
 
 def save_to_google_sheet_background(webhook_url, payload):
     """백그라운드 저장"""
@@ -99,10 +106,12 @@ def get_ai_analysis(model_name, topic, major):
         try:
             response = model.generate_content(prompt)
             return json.loads(response.text)
-        except Exception as e:
-            if i < max_retries - 1:
-                time.sleep(2)
-                continue
+        except (ResourceExhausted, Exception) as e:
+            # 429 한도 에러 발생 시 백오프 대기 후 재시도
+            if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
+                if i < max_retries - 1:
+                    time.sleep(5 * (i + 1))
+                    continue
             raise e
 
 # --- 6. 실행 및 결과 ---
@@ -122,6 +131,7 @@ with col2:
     selected_topic = st.selectbox("📍 소단원", GEOMETRY_UNITS[unit_cat])
 selected_major = st.text_input("🎓 희망 전공", placeholder="예: 자동차공학과")
 
+# 분석 트리거
 if st.button("✨ 연결고리 분석하기"):
     if not api_key:
         st.error("API Key가 필요합니다.")
@@ -131,6 +141,12 @@ if st.button("✨ 연결고리 분석하기"):
         with st.spinner("학문적 연결고리를 분석 중..."):
             try:
                 res = get_ai_analysis(selected_model_name, selected_topic, selected_major)
+                
+                # 다운로드 혹은 다른 인터랙션 시 화면 초기화 방지를 위해 세션에 박제
+                st.session_state['math_analysis_data'] = {
+                    'res': res, 'unit_cat': unit_cat, 'selected_topic': selected_topic, 'selected_major': selected_major
+                }
+                
                 if webhook_url:
                     payload = {
                         "student_id": student_id, "student_name": student_name, "unit_cat": unit_cat,
@@ -140,22 +156,31 @@ if st.button("✨ 연결고리 분석하기"):
                     save_to_google_sheet_background(webhook_url, payload)
                     st.toast("✅ 결과 전송 중!", icon="🚀")
 
-                st.markdown(f"### 📍 {selected_topic} X {selected_major}")
-                with st.container(border=True):
-                    st.markdown("#### 🔍 학문적 연결고리")
-                    st.markdown(res['connection'])
-                    st.divider()
-                    st.markdown("#### 🛠️ 실제 활용 사례")
-                    st.markdown(res['example'])
-                    st.divider()
-                    st.markdown("#### 🌟 선배로서의 조언")
-                    st.info(f"*{res['advice']}*")
-                
                 # 풍선 효과
                 st.balloons()
                 
-                download_text = f"[{selected_topic} x {selected_major} 분석 보고서]\n\n1. 대단원: {unit_cat}\n2. 소단원: {selected_topic}\n3. 연결성: {res['connection']}\n4. 사례: {res['example']}\n5. 조언: {res['advice']}"
-                st.download_button("📄 결과 다운로드", data=download_text, file_name=f"{selected_major}_분석.txt")
-                
             except Exception as e:
-                st.error(f"분석 중 오류: {e}")
+                error_msg = str(e)
+                if "429" in error_msg or "quota" in error_msg.lower():
+                    st.error("🚨 **안내:** 현재 동시에 접속한 학생들이 많아 AI 분석 서비스가 잠시 지연되었습니다. **약 30초 후에 [연결고리 분석하기] 버튼을 다시 한번만 눌러주세요!**")
+                else:
+                    st.error(f"분석 중 오류: {e}")
+
+# 결과 화면 렌더링부 (Session State 연동으로 영속성 유지)
+if 'math_analysis_data' in st.session_state:
+    saved = st.session_state['math_analysis_data']
+    res_data = saved['res']
+    
+    st.markdown(f"### 📍 {saved['selected_topic']} X {saved['selected_major']}")
+    with st.container(border=True):
+        st.markdown("#### 🔍 학문적 연결고리")
+        st.markdown(res_data['connection'])
+        st.divider()
+        st.markdown("#### 🛠️ 실제 활용 사례")
+        st.markdown(res_data['example'])
+        st.divider()
+        st.markdown("#### 🌟 선배로서의 조언")
+        st.info(f"*{res_data['advice']}*")
+        
+    download_text = f"[{saved['selected_topic']} x {saved['selected_major']} 분석 보고서]\n\n1. 대단원: {saved['unit_cat']}\n2. 소단원: {saved['selected_topic']}\n3. 연결성: {res_data['connection']}\n4. 사례: {res_data['example']}\n5. 조언: {res_data['advice']}"
+    st.download_button("📄 결과 다운로드", data=download_text, file_name=f"{saved['selected_major']}_분석.txt", use_container_width=True)
