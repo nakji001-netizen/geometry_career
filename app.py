@@ -33,27 +33,13 @@ GEOMETRY_UNITS = {
 }
 
 # --- 3. 로직 함수 ---
-@st.cache_data(show_spinner=False, ttl=86400)
+@st.cache_data(show_spinner=False)
 def get_best_flash_model():
-    """안정적인 최신 Flash 모델 명칭을 탐색하거나 무료 할당량이 넉넉한 2.5 계열로 복귀함"""
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        flash_models = sorted([
-            m.replace("models/", "") 
-            for m in available_models 
-            if 'flash' in m.lower() and 'lite' not in m.lower() and 'exp' not in m.lower()
-        ])
-        
-        # 일일 20회 제한이 있는 3.5 모델을 필터링하고 2.5 혹은 1.5 모델을 타겟팅
-        preferred_models = [m for m in flash_models if '3.5' not in m]
-        if preferred_models:
-            return preferred_models[-1]
-        elif flash_models:
-            return flash_models[-1]
-        return "gemini-2.5-flash"
-    except Exception:
-        # API 조회 자체에 에러가 나거나 한도가 풀려도 앱이 멈추지 않도록 안전한 최신 모델명 반환
-        return "gemini-2.5-flash"
+    """
+    [속도 최적화] 유료 플랜 전환 후에는 불필요한 모델 목록 조회(list_models) 네트워크 요청을 
+    생략하고, 가장 최신의 초고속 모델인 'gemini-2.5-flash'를 바로 사용하여 대기 시간을 없앱니다.
+    """
+    return "gemini-2.5-flash"
 
 def save_to_google_sheet_background(webhook_url, payload):
     """백그라운드 저장"""
@@ -88,17 +74,36 @@ with st.sidebar:
 # --- 5. 분석 엔진 ---
 @st.cache_data(show_spinner=False, ttl=86400) 
 def get_ai_analysis(model_name, topic, major):
+    """지문 길이를 통제하고 추론을 단순화하여 출력 속도를 대폭 끌어올린 심층 분석 함수"""
     generation_config = {
         "response_mime_type": "application/json",
         "response_schema": {
             "type": "object",
             "properties": {
-                "connection": {"type": "string"}, "example": {"type": "string"}, "advice": {"type": "string"}
+                "connection": {"type": "string"}, 
+                "example": {"type": "string"}, 
+                "advice": {"type": "string"}
             },
             "required": ["connection", "example", "advice"]
-        }
+        },
+        "temperature": 0.3  # [속도 최적화] 결정적인 단어 위주로 빠르게 정답을 출력하도록 조율합니다.
     }
-    model = genai.GenerativeModel(model_name=model_name, generation_config=generation_config)
+    
+    # [속도 최적화] 시스템 지침을 통해 긴 텍스트 출력을 원천 차단하고 핵심 위주로 유도합니다.
+    system_instruction = (
+        "너는 고등학교 기하 수학 교사이자 대학 진로 전학 전문가야. "
+        "기하 과목의 개념이 대학교 특정 전공에서 어떤 학문적 고리로 엮이는지 상세하게 분석하되, "
+        "답변이 너무 길어지면 시스템 로딩 속도가 느려지므로 아래의 제약을 칼같이 지켜야 해.\n\n"
+        "1. 학문적 연결고리(connection): LaTeX 수학식(예: $, $$)을 섞어 전문적으로 서술하되, 핵심만 딱 2~3문장 이내로 요약해 작성해 줘.\n"
+        "2. 실제 활용 사례(example): 전공 분야에서 실제 쓰이는 공학적/학술적 응용 사례를 명쾌하게 2~3문장 이내로 적어 줘.\n"
+        "3. 선배로서의 조언(advice): 해당 전공을 꿈꾸는 학생에게 기하 공부의 중요성을 언급하며 친근하게 2문장 이내로 독려해 줘."
+    )
+    
+    model = genai.GenerativeModel(
+        model_name=model_name, 
+        generation_config=generation_config,
+        system_instruction=system_instruction
+    )
     prompt = f"기하 과목의 '{topic}' 개념이 대학교 '{major}' 전공에서 어떻게 활용되는지 LaTeX를 포함해 분석해줘."
     
     max_retries = 3
@@ -107,10 +112,10 @@ def get_ai_analysis(model_name, topic, major):
             response = model.generate_content(prompt)
             return json.loads(response.text)
         except (ResourceExhausted, Exception) as e:
-            # 429 한도 에러 발생 시 백오프 대기 후 재시도
+            # 유료 키 상태이므로 한도 초과 시 대기 시간을 타이트하게 가져갑니다.
             if isinstance(e, ResourceExhausted) or "429" in str(e) or "quota" in str(e).lower():
                 if i < max_retries - 1:
-                    time.sleep(5 * (i + 1))
+                    time.sleep(2 * (i + 1))
                     continue
             raise e
 
