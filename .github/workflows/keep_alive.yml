@@ -1,0 +1,35 @@
+name: Keep Streamlit App Alive
+
+on:
+  schedule:
+    - cron: '0 */5 * * *' # 5시간마다 실행
+  workflow_dispatch:
+
+jobs:
+  auto-commit:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    # ⭐️ [최종 솔루션] 메인 app.py 파일 맨 아래에 주석으로 봇의 지문을 남깁니다.
+    - name: Update Main App Code directly
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        # app.py 맨 아랫줄에 기존 주석이 있다면 지우고, 새로운 타임스탬프 주석을 추가합니다.
+        # (새로운 주석이 매번 덮어써지므로 파일이 무한히 길어지지 않습니다.)
+        sed -i '/# Last Heartbeat:/d' app.py
+        echo "# Last Heartbeat: $(date)" >> app.py
+        
+        git add app.py
+        git commit -m "Chore: Streamlit keep-alive core heartbeat $(date)"
+
+    - name: Push changes
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.GH_TOKEN }}
+        branch: ${{ github.ref }}
