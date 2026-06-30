@@ -204,4 +204,4 @@ if 'math_analysis_data' in st.session_state:
         
     download_text = f"[{saved['selected_topic']} x {saved['selected_major']} 분석 보고서]\n\n1. 대단원: {saved['unit_cat']}\n2. 소단원: {saved['selected_topic']}\n3. 연결성: {res_data['connection']}\n4. 사례: {res_data['example']}\n5. 조언: {res_data['advice']}"
     st.download_button("📄 결과 다운로드", data=download_text, file_name=f"{saved['selected_major']}_분석.txt", use_container_width=True)
-# Last Heartbeat: Mon Jun 29 21:22:13 UTC 2026
+# Last Heartbeat: Tue Jun 30 02:55:25 UTC 2026
